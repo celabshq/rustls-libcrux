@@ -1,19 +1,11 @@
 use alloc::boxed::Box;
 use alloc::string::String;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt::Debug;
-use rand_core::TryRngCore;
-use std::error::Error as StdError;
 
-use libcrux::hpke::aead::AEAD;
-use libcrux::hpke::kdf::KDF;
-use libcrux::hpke::kem::KEM;
-use libcrux::hpke::HPKEConfig;
+use libcrux::protocols::hpke;
+use libcrux::protocols::hpke::libcrux as HPKEProvider;
 
-use hpke_rs_crypto::types::{AeadAlgorithm, KdfAlgorithm, KemAlgorithm};
-use hpke_rs_crypto::HpkeCrypto;
-use hpke_rs_rust_crypto::HpkeRustCrypto;
 use rustls::crypto::hpke::{
     EncapsulatedSecret, Hpke, HpkeOpener, HpkePrivateKey, HpkePublicKey, HpkeSealer, HpkeSuite,
 };
@@ -21,7 +13,7 @@ use rustls::internal::msgs::enums::{
     HpkeAead as HpkeAeadId, HpkeKdf as HpkeKdfId, HpkeKem as HpkeKemId,
 };
 use rustls::internal::msgs::handshake::HpkeSymmetricCipherSuite;
-use rustls::{Error, OtherError};
+use rustls::Error;
 
 /// All supported HPKE suites.
 ///
@@ -35,246 +27,83 @@ pub static ALL_SUPPORTED_SUITES: &[&dyn Hpke] = &[
     DHKEM_X25519_HKDF_SHA256_CHACHA20_POLY1305,
 ];
 
-pub static DHKEM_P256_HKDF_SHA256_AES_128: &LibcruxHpke = &LibcruxHpke(HPKEConfig(
-    libcrux::hpke::Mode::mode_base,
-    KEM::DHKEM_P256_HKDF_SHA256,
-    KDF::HKDF_SHA256,
-    AEAD::AES_128_GCM,
-));
+pub static DHKEM_P256_HKDF_SHA256_AES_128: &LibcruxHpkeConfig = &LibcruxHpkeConfig{
+    mode: hpke::Mode::Base,
+    kem: hpke::hpke_types::KemAlgorithm::DhKemP256,
+    kdf: hpke::hpke_types::KdfAlgorithm::HkdfSha256,
+    aead: hpke::hpke_types::AeadAlgorithm::Aes128Gcm,
+};
 
-pub static DHKEM_P256_HKDF_SHA256_AES_256: &LibcruxHpke = &LibcruxHpke(HPKEConfig(
-    libcrux::hpke::Mode::mode_base,
-    KEM::DHKEM_P256_HKDF_SHA256,
-    KDF::HKDF_SHA256,
-    AEAD::AES_256_GCM,
-));
-
-pub static DHKEM_P256_HKDF_SHA256_CHACHA20_POLY1305: &LibcruxHpke = &LibcruxHpke(HPKEConfig(
-    libcrux::hpke::Mode::mode_base,
-    KEM::DHKEM_P256_HKDF_SHA256,
-    KDF::HKDF_SHA256,
-    AEAD::ChaCha20Poly1305,
-));
-
-pub static DHKEM_X25519_HKDF_SHA256_AES_128: &LibcruxHpke = &LibcruxHpke(HPKEConfig(
-    libcrux::hpke::Mode::mode_base,
-    KEM::DHKEM_X25519_HKDF_SHA256,
-    KDF::HKDF_SHA256,
-    AEAD::AES_128_GCM,
-));
-
-pub static DHKEM_X25519_HKDF_SHA256_AES_256: &LibcruxHpke = &LibcruxHpke(HPKEConfig(
-    libcrux::hpke::Mode::mode_base,
-    KEM::DHKEM_X25519_HKDF_SHA256,
-    KDF::HKDF_SHA256,
-    AEAD::AES_256_GCM,
-));
-
-pub static DHKEM_X25519_HKDF_SHA256_CHACHA20_POLY1305: &LibcruxHpke = &LibcruxHpke(HPKEConfig(
-    libcrux::hpke::Mode::mode_base,
-    KEM::DHKEM_X25519_HKDF_SHA256,
-    KDF::HKDF_SHA256,
-    AEAD::ChaCha20Poly1305,
-));
-
-/// A HPKE suite backed by the [hpke-rs] crate and its rust-crypto cryptography provider.
-///
-/// [hpke-rs]: https://github.com/franziskuskiefer/hpke-rs
-#[derive(Debug)]
-pub struct HpkeRs(HpkeSuite);
-
-impl HpkeRs {
-    fn start(&self) -> Result<hpke_rs::Hpke<HpkeRustCrypto>, Error> {
-        Ok(hpke_rs::Hpke::new(
-            hpke_rs::Mode::Base,
-            KemAlgorithm::try_from(u16::from(self.0.kem)).map_err(other_err)?,
-            KdfAlgorithm::try_from(u16::from(self.0.sym.kdf_id)).map_err(other_err)?,
-            AeadAlgorithm::try_from(u16::from(self.0.sym.aead_id)).map_err(other_err)?,
-        ))
-    }
-}
-
-impl Hpke for HpkeRs {
-    fn seal(
-        &self,
-        info: &[u8],
-        aad: &[u8],
-        plaintext: &[u8],
-        pub_key: &HpkePublicKey,
-    ) -> Result<(EncapsulatedSecret, Vec<u8>), Error> {
-        let pk_r = hpke_rs::HpkePublicKey::new(pub_key.0.clone());
-        let (enc, ciphertext) = self
-            .start()?
-            .seal(&pk_r, info, aad, plaintext, None, None, None)
-            .map_err(other_err)?;
-        Ok((EncapsulatedSecret(enc.to_vec()), ciphertext))
-    }
-
-    fn setup_sealer(
-        &self,
-        info: &[u8],
-        pub_key: &HpkePublicKey,
-    ) -> Result<(EncapsulatedSecret, Box<dyn HpkeSealer + 'static>), Error> {
-        let pk_r = hpke_rs::HpkePublicKey::new(pub_key.0.clone());
-        let (enc, context) = self
-            .start()?
-            .setup_sender(&pk_r, info, None, None, None)
-            .map_err(other_err)?;
-        Ok((
-            EncapsulatedSecret(enc.to_vec()),
-            Box::new(HpkeRsSender { context }),
-        ))
-    }
-
-    fn open(
-        &self,
-        enc: &EncapsulatedSecret,
-        info: &[u8],
-        aad: &[u8],
-        ciphertext: &[u8],
-        secret_key: &HpkePrivateKey,
-    ) -> Result<Vec<u8>, Error> {
-        let sk_r = hpke_rs::HpkePrivateKey::new(secret_key.secret_bytes().to_vec());
-        self.start()?
-            .open(
-                enc.0.as_slice(),
-                &sk_r,
-                info,
-                aad,
-                ciphertext,
-                None,
-                None,
-                None,
-            )
-            .map_err(other_err)
-    }
-
-    fn setup_opener(
-        &self,
-        enc: &EncapsulatedSecret,
-        info: &[u8],
-        secret_key: &HpkePrivateKey,
-    ) -> Result<Box<dyn HpkeOpener + 'static>, Error> {
-        let sk_r = hpke_rs::HpkePrivateKey::new(secret_key.secret_bytes().to_vec());
-        Ok(Box::new(HpkeRsReceiver {
-            context: self
-                .start()?
-                .setup_receiver(enc.0.as_slice(), &sk_r, info, None, None, None)
-                .map_err(other_err)?,
-        }))
-    }
-
-    fn generate_key_pair(&self) -> Result<(HpkePublicKey, HpkePrivateKey), Error> {
-        let kem_algorithm = match self.0.kem {
-            HpkeKemId::DHKEM_P256_HKDF_SHA256 => KemAlgorithm::DhKemP256,
-            HpkeKemId::DHKEM_X25519_HKDF_SHA256 => KemAlgorithm::DhKem25519,
-            _ => {
-                // Safety: we don't expose HpkeRs static instances for unsupported algorithms.
-                unimplemented!()
-            }
-        };
-
-        let (public_key, secret_key) = HpkeRustCrypto::kem_key_gen(kem_algorithm, &mut HpkeRustCrypto::prng())
-            .map_err(other_err)?;
-
-        Ok((HpkePublicKey(public_key), HpkePrivateKey::from(secret_key)))
-    }
-
-    fn suite(&self) -> HpkeSuite {
-        self.0
-    }
-}
-
-#[derive(Debug)]
-struct HpkeRsSender {
-    context: hpke_rs::Context<HpkeRustCrypto>,
-}
-
-impl HpkeSealer for HpkeRsSender {
-    fn seal(&mut self, aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Error> {
-        self.context
-            .seal(aad, plaintext)
-            .map_err(other_err)
-    }
-}
-
-#[derive(Debug)]
-struct HpkeRsReceiver {
-    context: hpke_rs::Context<HpkeRustCrypto>,
-}
-
-impl HpkeOpener for HpkeRsReceiver {
-    fn open(&mut self, aad: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, Error> {
-        self.context
-            .open(aad, ciphertext)
-            .map_err(other_err)
-    }
-}
+pub static DHKEM_P256_HKDF_SHA256_AES_256: &LibcruxHpkeConfig = &LibcruxHpkeConfig {
+    mode: hpke::Mode::Base,
+    kem: hpke::hpke_types::KemAlgorithm::DhKemP256,
+    kdf: hpke::hpke_types::KdfAlgorithm::HkdfSha256,
+    aead: hpke::hpke_types::AeadAlgorithm::Aes256Gcm,
+};
+pub static DHKEM_P256_HKDF_SHA256_CHACHA20_POLY1305: &LibcruxHpkeConfig = &LibcruxHpkeConfig {
+    mode: hpke::Mode::Base,
+    kem: hpke::hpke_types::KemAlgorithm::DhKemP256,
+    kdf: hpke::hpke_types::KdfAlgorithm::HkdfSha256,
+    aead: hpke::hpke_types::AeadAlgorithm::ChaCha20Poly1305,
+};
+pub static DHKEM_X25519_HKDF_SHA256_AES_128: &LibcruxHpkeConfig = &LibcruxHpkeConfig {
+    mode: hpke::Mode::Base,
+    kem: hpke::hpke_types::KemAlgorithm::DhKem25519,
+    kdf: hpke::hpke_types::KdfAlgorithm::HkdfSha256,
+    aead: hpke::hpke_types::AeadAlgorithm::Aes128Gcm,
+};
+pub static DHKEM_X25519_HKDF_SHA256_AES_256: &LibcruxHpkeConfig = &LibcruxHpkeConfig {
+    mode: hpke::Mode::Base,
+    kem: hpke::hpke_types::KemAlgorithm::DhKem25519,
+    kdf: hpke::hpke_types::KdfAlgorithm::HkdfSha256,
+    aead: hpke::hpke_types::AeadAlgorithm::Aes256Gcm,
+};
+pub static DHKEM_X25519_HKDF_SHA256_CHACHA20_POLY1305: &LibcruxHpkeConfig = &LibcruxHpkeConfig {
+    mode: hpke::Mode::Base,
+    kem: hpke::hpke_types::KemAlgorithm::DhKem25519,
+    kdf: hpke::hpke_types::KdfAlgorithm::HkdfSha256,
+    aead: hpke::hpke_types::AeadAlgorithm::ChaCha20Poly1305,
+};
 
 #[derive(Debug)]
 struct LibcruxHpkeSealer {
-    context: (
-        libcrux::hpke::aead::Key,
-        libcrux::hpke::aead::Nonce,
-        u32,
-        Vec<u8>,
-    ),
-    config: libcrux::hpke::HPKEConfig,
+    context: hpke::Context<HPKEProvider::HpkeLibcrux>,
 }
 
 impl HpkeSealer for LibcruxHpkeSealer {
     fn seal(&mut self, aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Error> {
-        let mut context = (
-            libcrux::hpke::aead::Key::new(),
-            libcrux::hpke::aead::Nonce::new(),
-            0,
-            Vec::new(),
-        );
-        core::mem::swap(&mut self.context, &mut context);
-
-        let (ciphertext, mut context) =
-            libcrux::hpke::ContextS_Seal(self.config.3, context, aad, plaintext)
-                .map_err(|_| Error::General(String::from("hpke seal error")))?;
-        core::mem::swap(&mut self.context, &mut context);
-
-        Ok(ciphertext)
+        self.context.seal(aad, plaintext)
+            .map_err(|_| Error::General(String::from("hpke seal error")))
     }
 }
 
 #[derive(Debug)]
 struct LibcruxHpkeOpener {
-    context: (
-        libcrux::hpke::aead::Key,
-        libcrux::hpke::aead::Nonce,
-        u32,
-        Vec<u8>,
-    ),
-    config: libcrux::hpke::HPKEConfig,
+    context: hpke::Context<HPKEProvider::HpkeLibcrux>,
 }
 
 impl HpkeOpener for LibcruxHpkeOpener {
     fn open(&mut self, aad: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, Error> {
-        let mut context = (
-            libcrux::hpke::aead::Key::new(),
-            libcrux::hpke::aead::Nonce::new(),
-            0,
-            Vec::new(),
-        );
-        core::mem::swap(&mut self.context, &mut context);
-
-        let (plaintext, mut context) =
-            libcrux::hpke::ContextR_Open(self.config.3, context, aad, ciphertext)
-                .map_err(|_| Error::General(String::from("hpke open error")))?;
-
-        core::mem::swap(&mut self.context, &mut context);
-        Ok(plaintext)
+        self.context.open(aad, ciphertext)
+            .map_err(|_| Error::General(String::from("hpke open error")))
     }
 }
 
 #[derive(Debug)]
-pub struct LibcruxHpke(libcrux::hpke::HPKEConfig);
+pub struct LibcruxHpkeConfig {
+    mode: hpke::Mode,
+    kem: hpke::hpke_types::KemAlgorithm,
+    kdf: hpke::hpke_types::KdfAlgorithm,
+    aead: hpke::hpke_types::AeadAlgorithm,
+}
 
-impl Hpke for LibcruxHpke {
+impl From<&LibcruxHpkeConfig> for hpke::Hpke<HPKEProvider::HpkeLibcrux> {
+    fn from(value: &LibcruxHpkeConfig) -> Self {
+        Self::new(value.mode, value.kem, value.kdf, value.aead)
+    }
+}
+
+impl Hpke for LibcruxHpkeConfig {
     fn seal(
         &self,
         info: &[u8],
@@ -282,14 +111,14 @@ impl Hpke for LibcruxHpke {
         plaintext: &[u8],
         pub_key: &HpkePublicKey,
     ) -> Result<(EncapsulatedSecret, Vec<u8>), Error> {
-        let mut randomness = alloc::vec![0u8; libcrux::hpke::kem::Nsecret(self.0 .1)];
-        rand_core::OsRng.try_fill_bytes(&mut randomness).unwrap();
 
-        libcrux::hpke::HpkeSeal(
-            self.0, &pub_key.0, info, aad, plaintext, None, None, None, randomness,
-        )
-        .map_err(|_| Error::General(alloc::string::String::from("hpke seal error")))
-        .map(|ctxt| (EncapsulatedSecret(ctxt.0), ctxt.1))
+        let mut config = hpke::Hpke::<HPKEProvider::HpkeLibcrux>::from(self);
+
+        let pk_r = hpke::HpkePublicKey::from(pub_key.0.as_slice());
+
+        config.seal(&pk_r, info, aad, plaintext, None, None, None)
+            .map_err(|_| Error::General(alloc::string::String::from("hpke seal error")))
+            .map(|ctxt| (EncapsulatedSecret(ctxt.0), ctxt.1))
     }
 
     fn setup_sealer(
@@ -297,17 +126,17 @@ impl Hpke for LibcruxHpke {
         info: &[u8],
         pub_key: &HpkePublicKey,
     ) -> Result<(EncapsulatedSecret, Box<dyn HpkeSealer + 'static>), Error> {
-        let mut randomness = alloc::vec![0u8; libcrux::hpke::kem::Nsecret(self.0 .1)];
-        rand_core::OsRng.try_fill_bytes(&mut randomness).unwrap();
+        let mut config = hpke::Hpke::<HPKEProvider::HpkeLibcrux>::from(self);
 
-        let (kem_ctxt, ctx) = libcrux::hpke::SetupBaseS(self.0, &pub_key.0, info, randomness)
+        let pk_r = hpke::HpkePublicKey::from(pub_key.0.as_slice());
+
+        let (kem_ctxt, ctx) = config.setup_sender(&pk_r, info, None, None, None)
             .map_err(|_| Error::General(alloc::string::String::from("hpke setup sealer error")))?;
 
         Ok((
             EncapsulatedSecret(kem_ctxt),
             Box::new(LibcruxHpkeSealer {
                 context: ctx,
-                config: self.0,
             }),
         ))
     }
@@ -320,17 +149,12 @@ impl Hpke for LibcruxHpke {
         ciphertext: &[u8],
         secret_key: &HpkePrivateKey,
     ) -> Result<Vec<u8>, Error> {
-        libcrux::hpke::HpkeOpen(
-            self.0,
-            &libcrux::hpke::HPKECiphertext(enc.0.clone(), Vec::from(ciphertext)),
-            secret_key.secret_bytes(),
-            info,
-            aad,
-            None,
-            None,
-            None,
-        )
-        .map_err(|_| Error::General(alloc::string::String::from("hpke open error")))
+        let config = hpke::Hpke::<HPKEProvider::HpkeLibcrux>::from(self);
+
+        let sk_r = hpke::HpkePrivateKey::from(secret_key.secret_bytes());
+
+        config.open(&enc.0, &sk_r, info, aad, ciphertext, None, None, None)
+            .map_err(|_| Error::General(alloc::string::String::from("hpke open error")))
     }
 
     fn setup_opener(
@@ -339,45 +163,49 @@ impl Hpke for LibcruxHpke {
         info: &[u8],
         secret_key: &HpkePrivateKey,
     ) -> Result<Box<dyn HpkeOpener + 'static>, Error> {
-        let ctx = libcrux::hpke::SetupBaseR(self.0, &enc.0, secret_key.secret_bytes(), info)
+        let config = hpke::Hpke::<HPKEProvider::HpkeLibcrux>::from(self);
+
+        let sk_r = hpke::HpkePrivateKey::from(secret_key.secret_bytes());
+
+        
+        let ctx = config.setup_receiver(&enc.0, &sk_r, info, None, None, None)
             .map_err(|_| Error::General(alloc::string::String::from("hpke setup opener error")))?;
 
         Ok(Box::new(LibcruxHpkeOpener {
             context: ctx,
-            config: self.0,
         }))
     }
 
     fn generate_key_pair(&self) -> Result<(HpkePublicKey, HpkePrivateKey), Error> {
-        let mut randomness = alloc::vec![0u8; libcrux::hpke::kem::Nsecret(self.0 .1)];
-        rand_core::OsRng.try_fill_bytes(&mut randomness).unwrap();
+        let mut config = hpke::Hpke::<HPKEProvider::HpkeLibcrux>::from(self);
 
-        libcrux::hpke::kem::GenerateKeyPair(self.0 .1, randomness)
+        config.generate_key_pair()
             .map_err(|_| Error::General(String::from("hpke kem keygen error")))
-            .map(|(sk, pk)| (HpkePublicKey(pk), HpkePrivateKey::from(sk)))
+            .map(|pair| pair.into_keys())
+            .map(|(sk, pk)| (HpkePublicKey(pk.as_slice().to_vec()), HpkePrivateKey::from(sk.as_slice().to_vec())))
     }
 
     fn suite(&self) -> HpkeSuite {
-        let kem = match self.0 .1 {
-            KEM::DHKEM_P256_HKDF_SHA256 => HpkeKemId::DHKEM_P256_HKDF_SHA256,
-            KEM::DHKEM_P384_HKDF_SHA384 => HpkeKemId::DHKEM_P384_HKDF_SHA384,
-            KEM::DHKEM_P521_HKDF_SHA512 => HpkeKemId::DHKEM_P521_HKDF_SHA512,
-            KEM::DHKEM_X25519_HKDF_SHA256 => HpkeKemId::DHKEM_X25519_HKDF_SHA256,
-            KEM::DHKEM_X448_HKDF_SHA512 => HpkeKemId::DHKEM_X448_HKDF_SHA512,
+        let kem = match self.kem {
+            hpke::hpke_types::KemAlgorithm::DhKemP256 => HpkeKemId::DHKEM_P256_HKDF_SHA256,
+            hpke::hpke_types::KemAlgorithm::DhKemP384 => HpkeKemId::DHKEM_P384_HKDF_SHA384,
+            hpke::hpke_types::KemAlgorithm::DhKemP521 => HpkeKemId::DHKEM_P521_HKDF_SHA512,
+            hpke::hpke_types::KemAlgorithm::DhKem25519 => HpkeKemId::DHKEM_X25519_HKDF_SHA256,
+            hpke::hpke_types::KemAlgorithm::DhKem448 => HpkeKemId::DHKEM_X448_HKDF_SHA512,
             _ => unimplemented!(),
         };
 
-        let kdf_id = match self.0 .2 {
-            KDF::HKDF_SHA256 => HpkeKdfId::HKDF_SHA256,
-            KDF::HKDF_SHA384 => HpkeKdfId::HKDF_SHA384,
-            KDF::HKDF_SHA512 => HpkeKdfId::HKDF_SHA512,
+        let kdf_id = match self.kdf {
+            hpke::hpke_types::KdfAlgorithm::HkdfSha256 => HpkeKdfId::HKDF_SHA256,
+            hpke::hpke_types::KdfAlgorithm::HkdfSha384 => HpkeKdfId::HKDF_SHA384,
+            hpke::hpke_types::KdfAlgorithm::HkdfSha512 => HpkeKdfId::HKDF_SHA512,
         };
 
-        let aead_id = match self.0 .3 {
-            AEAD::AES_128_GCM => HpkeAeadId::AES_128_GCM,
-            AEAD::AES_256_GCM => HpkeAeadId::AES_256_GCM,
-            AEAD::ChaCha20Poly1305 => HpkeAeadId::CHACHA20_POLY_1305,
-            AEAD::Export_only => HpkeAeadId::EXPORT_ONLY,
+        let aead_id = match self.aead {
+            hpke::hpke_types::AeadAlgorithm::Aes128Gcm => HpkeAeadId::AES_128_GCM,
+            hpke::hpke_types::AeadAlgorithm::Aes256Gcm => HpkeAeadId::AES_256_GCM,
+            hpke::hpke_types::AeadAlgorithm::ChaCha20Poly1305 => HpkeAeadId::CHACHA20_POLY_1305,
+            hpke::hpke_types::AeadAlgorithm::HpkeExport => HpkeAeadId::EXPORT_ONLY,
         };
 
         HpkeSuite {
@@ -385,16 +213,6 @@ impl Hpke for LibcruxHpke {
             sym: HpkeSymmetricCipherSuite { kdf_id, aead_id },
         }
     }
-}
-
-#[cfg(feature = "std")]
-fn other_err(err: impl StdError + Send + Sync + 'static) -> Error {
-    Error::Other(OtherError(Arc::new(err)))
-}
-
-#[cfg(not(feature = "std"))]
-fn other_err(err: impl Send + Sync + 'static) -> Error {
-    Error::General(alloc::format!("{}", err));
 }
 
 #[cfg(test)]

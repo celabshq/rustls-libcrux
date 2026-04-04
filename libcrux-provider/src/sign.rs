@@ -1,6 +1,7 @@
+use std::vec;
+
 use alloc::boxed::Box;
 use alloc::string::String;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use der::oid::Arc as OidArc;
@@ -14,13 +15,9 @@ use rustls::{SignatureAlgorithm, SignatureScheme};
 
 use der::{asn1::UintRef, Encode};
 
-use libcrux::signature;
-
-#[derive(Clone, Debug)]
-pub struct EcdsaSigningKeyP256 {
-    key: Arc<Vec<u8>>,
-    scheme: SignatureScheme,
-}
+use libcrux::algorithms::rsapss;
+use libcrux::algorithms::ecdsa;
+use libcrux::algorithms::ed25519;
 
 #[derive(Clone, Debug, Copy)]
 pub enum EcdsaSignatureScheme {
@@ -29,15 +26,13 @@ pub enum EcdsaSignatureScheme {
     ECDSA_NISTP256_SHA256,
 }
 
-#[derive(Clone, Debug)]
 pub enum LibcruxSigningKey {
     RsaPss {
         n: Vec<u8>,
         d: Vec<u8>,
-        key_size: signature::rsa_pss::RsaPssKeySize,
-        hash_algo: signature::DigestAlgorithm,
+        hash_algo: rsapss::DigestAlgorithm,
     },
-    Ecdsa(Vec<u8>, EcdsaSignatureScheme),
+    Ecdsa(ecdsa::p256::PrivateKey, EcdsaSignatureScheme),
     Ed25519([u8; 32]),
 }
 
@@ -71,20 +66,21 @@ impl TryFrom<PrivateKeyDer<'_>> for LibcruxSigningKey {
                             ObjectIdentifier::from_bytes(parameter.value()).unwrap();
                         let parameter_oid_arcs: Vec<OidArc> = parameter_oid.arcs().collect();
 
-                        let scheme = match parameter_oid_arcs.as_slice() {
+                        let (key, scheme) = match parameter_oid_arcs.as_slice() {
                             [1, 2, 840, 10045, 3, 1, 7] => {
-                                EcdsaSignatureScheme::ECDSA_NISTP256_SHA256
+                                let key = private_key_info.private_key;
+                                let key: ecdsa::p256::PrivateKey = EcPrivateKey::try_from(key)
+                                    .map_err(|_| pkcs8::Error::KeyMalformed)?
+                                    .private_key
+                                    .try_into()
+                                    .map_err(|_| pkcs8::Error::KeyMalformed)?;
+
+                                (key, EcdsaSignatureScheme::ECDSA_NISTP256_SHA256)
                             }
                             // [1, 3, 132, 0, 34] => EcdsaSignatureScheme::ECDSA_NISTP384_SHA384,
                             // [1, 3, 132, 0, 35] => EcdsaSignatureScheme::ECDSA_NISTP521_SHA512,
                             _ => return Err(pkcs8::Error::KeyMalformed),
                         };
-
-                        let key = private_key_info.private_key;
-                        let key = EcPrivateKey::try_from(key)
-                            .map_err(|_| pkcs8::Error::KeyMalformed)?
-                            .private_key
-                            .to_vec();
 
                         Ok(Self::Ecdsa(key, scheme))
                     }
@@ -103,15 +99,6 @@ impl TryFrom<PrivateKeyDer<'_>> for LibcruxSigningKey {
                         let d = rsa_priv_key.private_exponent.as_bytes();
                         let d = trim_leading_zeroes(d).to_vec();
 
-                        let key_size = match n.len() {
-                            256 => signature::rsa_pss::RsaPssKeySize::N2048,
-                            384 => signature::rsa_pss::RsaPssKeySize::N3072,
-                            512 => signature::rsa_pss::RsaPssKeySize::N4096,
-                            768 => signature::rsa_pss::RsaPssKeySize::N6144,
-                            1024 => signature::rsa_pss::RsaPssKeySize::N8192,
-                            _ => return Err(pkcs8::Error::KeyMalformed),
-                        };
-
                         // let pub_key =
                         //     signature::rsa_pss::RsaPssPublicKey::new(key_size, &n).unwrap();
                         // let priv_key = signature::rsa_pss::RsaPssPrivateKey::new(&pub_key, &d);
@@ -119,8 +106,7 @@ impl TryFrom<PrivateKeyDer<'_>> for LibcruxSigningKey {
                         Ok(Self::RsaPss {
                             n,
                             d,
-                            key_size,
-                            hash_algo: signature::DigestAlgorithm::Sha256,
+                            hash_algo: rsapss::DigestAlgorithm::Sha2_256,
                         })
                     }
                     _ => Err(pkcs8::Error::KeyMalformed),
@@ -141,6 +127,45 @@ fn trim_leading_zeroes(mut buf: &[u8]) -> &[u8] {
     }
     buf
 }
+
+impl core::fmt::Debug for LibcruxSigningKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            LibcruxSigningKey::RsaPss { n, d: _, hash_algo } => {
+                f.debug_struct("RsaPss")
+                    .field("modulus_len", &n.len())
+                    .field("private_exponent", &"<redacted>")
+                    .field("hash_algo", hash_algo)
+                    .finish()
+            }
+            LibcruxSigningKey::Ecdsa(_, scheme) => {
+                f.debug_struct("Ecdsa")
+                    .field("private_key", &"<redacted>")
+                    .field("scheme", scheme)
+                    .finish()
+            }
+            LibcruxSigningKey::Ed25519(_) => {
+                f.debug_struct("Ed25519")
+                    .field("private_key", &"<redacted>")
+                    .finish()
+            }
+        }
+    }
+}
+
+impl Clone for LibcruxSigningKey {
+    fn clone(&self) -> Self {
+        match self {
+            LibcruxSigningKey::Ecdsa(key, scheme) => {
+                let key_slice: &[u8; 32] = key.as_ref();
+                let key = ecdsa::p256::PrivateKey::try_from(key_slice).unwrap();
+                LibcruxSigningKey::Ecdsa(key, *scheme)
+            }
+            LibcruxSigningKey::Ed25519(key) => LibcruxSigningKey::Ed25519(*key),
+            LibcruxSigningKey::RsaPss { n, d, hash_algo } => LibcruxSigningKey::RsaPss { n: n.clone(), d: d.clone(), hash_algo: *hash_algo },
+        }
+    }
+}
 impl SigningKey for LibcruxSigningKey {
     fn choose_scheme(&self, offered: &[SignatureScheme]) -> Option<Box<dyn Signer>> {
         if offered.contains(&self.scheme()) {
@@ -159,89 +184,50 @@ impl SigningKey for LibcruxSigningKey {
     }
 }
 
-impl SigningKey for EcdsaSigningKeyP256 {
-    fn choose_scheme(&self, offered: &[SignatureScheme]) -> Option<Box<dyn Signer>> {
-        if offered.contains(&self.scheme) {
-            Some(Box::new(self.clone()))
-        } else {
-            None
-        }
-    }
-
-    fn algorithm(&self) -> SignatureAlgorithm {
-        SignatureAlgorithm::ECDSA
-    }
-}
-
-impl Signer for EcdsaSigningKeyP256 {
-    fn sign(&self, message: &[u8]) -> Result<Vec<u8>, rustls::Error> {
-        let mut rng = rand_core::OsRng;
-        signature::sign(
-            signature::Algorithm::EcDsaP256(signature::DigestAlgorithm::Sha256),
-            message,
-            &self.key,
-            &mut rng.unwrap_mut(),
-        )
-        .map_err(|_| rustls::Error::General("signing failed".into()))
-        .map(|sig| match sig {
-            signature::Signature::EcDsaP256(sig) => der_encode_ecdsa_signature(&sig).unwrap(),
-            _ => unreachable!(),
-        })
-    }
-
-    fn scheme(&self) -> SignatureScheme {
-        self.scheme
-    }
-}
-
 impl Signer for LibcruxSigningKey {
     fn sign(&self, message: &[u8]) -> Result<Vec<u8>, rustls::Error> {
         match self {
             LibcruxSigningKey::RsaPss {
                 n,
                 d,
-                key_size,
                 hash_algo,
             } => {
+                let mut sig = vec![0u8; n.len()];
                 let mut salt = [0u8; 32];
                 rand_core::OsRng.try_fill_bytes(&mut salt).unwrap();
-                let pub_key =
-                    signature::rsa_pss::RsaPssPublicKey::new(*key_size, n).map_err(|_| {
-                        rustls::Error::General(String::from("error building public key"))
-                    })?;
+                let n = n.as_slice();
+                let d = d.as_slice();
+
                 let priv_key =
-                    signature::rsa_pss::RsaPssPrivateKey::new(&pub_key, d).map_err(|_| {
+                    rsapss::VarLenPrivateKey::from_components(n, d).map_err(|_| {
                         rustls::Error::General(String::from("error building private key"))
                     })?;
-                let sig = priv_key
-                    .sign(*hash_algo, &salt, message)
+                rsapss::sign_varlen(*hash_algo, &priv_key, message, &salt, sig.as_mut_slice())
                     .map_err(|_| rustls::Error::General(String::from("error signing")))?;
 
-                Ok(sig.as_bytes().to_vec())
+                Ok(sig)
             }
 
             LibcruxSigningKey::Ecdsa(private_key, scheme) => {
-                let alg = match scheme {
+                match scheme {
                     EcdsaSignatureScheme::ECDSA_NISTP256_SHA256 => {
-                        signature::Algorithm::EcDsaP256(signature::DigestAlgorithm::Sha256)
-                    } // EcdsaSignatureScheme::ECDSA_NISTP384_SHA384 => todo!(),
-                      // EcdsaSignatureScheme::ECDSA_NISTP521_SHA512 => todo!(),
-                };
-                let sig = signature::sign(alg, message, private_key, &mut rand_core::OsRng.unwrap_mut())
-                    .map_err(|_| rustls::Error::General(String::from("signing error")))?;
-
-                match sig {
-                    signature::Signature::EcDsaP256(sig) => der_encode_ecdsa_signature(&sig)
-                        .map_err(|_| {
+                        let alg = ecdsa::DigestAlgorithm::Sha256;
+                        let nonce = ecdsa::p256::Nonce::random(&mut rand_core::OsRng.unwrap_mut())
+                            .map_err(|_| rustls::Error::General(String::from("signing error")))?;
+                        let sig = ecdsa::p256::sign(alg, message, private_key, &nonce)
+                            .map_err(|_| rustls::Error::General(String::from("signing error")))?;
+                        der_encode_ecdsa_signature(&sig).map_err(|_| {
                             rustls::Error::General(String::from(
                                 "error der encoding ecdsa signature",
                             ))
-                        }),
-                    _ => unreachable!(),
+                        })
+                    }
+                    // EcdsaSignatureScheme::ECDSA_NISTP384_SHA384 => todo!(),
+                    // EcdsaSignatureScheme::ECDSA_NISTP521_SHA512 => todo!(),
                 }
             }
 
-            LibcruxSigningKey::Ed25519(sk) => libcrux_ed25519::sign(message, sk)
+            LibcruxSigningKey::Ed25519(sk) => ed25519::sign(message, sk)
                 .map_err(|_| rustls::Error::General(String::from("signing error")))
                 .map(|sig| sig.to_vec()),
         }
@@ -250,15 +236,15 @@ impl Signer for LibcruxSigningKey {
     fn scheme(&self) -> SignatureScheme {
         match self {
             LibcruxSigningKey::RsaPss {
-                hash_algo: signature::DigestAlgorithm::Sha256,
+                hash_algo: rsapss::DigestAlgorithm::Sha2_256,
                 ..
             } => SignatureScheme::RSA_PSS_SHA256,
             LibcruxSigningKey::RsaPss {
-                hash_algo: signature::DigestAlgorithm::Sha384,
+                hash_algo: rsapss::DigestAlgorithm::Sha2_384,
                 ..
             } => SignatureScheme::RSA_PSS_SHA384,
             LibcruxSigningKey::RsaPss {
-                hash_algo: signature::DigestAlgorithm::Sha512,
+                hash_algo: rsapss::DigestAlgorithm::Sha2_512,
                 ..
             } => SignatureScheme::RSA_PSS_SHA512,
             LibcruxSigningKey::Ecdsa(_, EcdsaSignatureScheme::ECDSA_NISTP256_SHA256) => {
@@ -278,7 +264,7 @@ impl Signer for LibcruxSigningKey {
 // copied from ecdsa crate, where it wasn't public
 /// Create an ASN.1 DER encoded signature from big endian `r` and `s` scalar
 /// components.
-fn der_encode_ecdsa_signature(sig: &signature::EcDsaP256Signature) -> der::Result<Vec<u8>> {
+fn der_encode_ecdsa_signature(sig: &ecdsa::p256::Signature) -> der::Result<Vec<u8>> {
     let (r, s) = sig.as_bytes();
     let r = UintRef::new(r)?;
     let s = UintRef::new(s)?;

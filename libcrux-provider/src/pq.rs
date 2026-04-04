@@ -1,5 +1,6 @@
 use core::convert::TryFrom;
-use libcrux_ml_kem::mlkem768;
+
+use libcrux::algorithms::mlkem;
 
 use alloc::{boxed::Box, vec, vec::Vec};
 use rand_core::TryRngCore;
@@ -19,9 +20,9 @@ impl SupportedKxGroup for X25519MlKem768 {
     fn start(&self) -> Result<Box<dyn ActiveKeyExchange>, Error> {
         let x25519 = crate::kx::X25519.start()?;
 
-        let mut rand = [0u8; libcrux_ml_kem::KEY_GENERATION_SEED_SIZE];
+        let mut rand = [0u8; mlkem::KEY_GENERATION_SEED_SIZE];
         rand_core::OsRng.try_fill_bytes(&mut rand).unwrap();
-        let ml_kem = mlkem768::generate_key_pair(rand);
+        let ml_kem = mlkem::mlkem768::generate_key_pair(rand);
 
         let mut combined_pub_key = Vec::with_capacity(COMBINED_PUBKEY_LEN);
         combined_pub_key.extend_from_slice(ml_kem.public_key().as_slice());
@@ -41,12 +42,12 @@ impl SupportedKxGroup for X25519MlKem768 {
 
         let x25519 = crate::kx::X25519.start_and_complete(share.x25519)?;
 
-        let mut rand = [0u8; libcrux_ml_kem::ENCAPS_SEED_SIZE];
+        let mut rand = [0u8; mlkem::ENCAPS_SEED_SIZE];
         rand_core::OsRng.try_fill_bytes(&mut rand).unwrap();
 
         let pk =
-            mlkem768::MlKem768PublicKey::try_from(share.ml_kem).map_err(|_| INVALID_KEY_SHARE)?;
-        let (ml_kem_share, ml_kem_secret) = mlkem768::encapsulate(&pk, rand);
+            mlkem::mlkem768::MlKem768PublicKey::try_from(share.ml_kem).map_err(|_| INVALID_KEY_SHARE)?;
+        let (ml_kem_share, ml_kem_secret) = mlkem::mlkem768::encapsulate(&pk, rand);
 
         let combined_secret = CombinedSecret::combine(x25519.secret, ml_kem_secret);
         let combined_share = CombinedShare::combine(&x25519.pub_key, ml_kem_share);
@@ -73,7 +74,7 @@ impl SupportedKxGroup for X25519MlKem768 {
 
 struct Active {
     x25519: Box<dyn ActiveKeyExchange>,
-    key_pair: Box<mlkem768::MlKem768KeyPair>,
+    key_pair: Box<mlkem::mlkem768::MlKem768KeyPair>,
     combined_pub_key: Vec<u8>,
 }
 
@@ -86,7 +87,7 @@ impl ActiveKeyExchange for Active {
         let combined = CombinedSecret::combine(
             self.x25519
                 .complete(ciphertext.x25519)?,
-            mlkem768::decapsulate(
+            mlkem::mlkem768::decapsulate(
                 self.key_pair.private_key(),
                 &ciphertext
                     .ml_kem
@@ -145,7 +146,7 @@ impl<'a> ReceivedCiphertext<'a> {
 struct CombinedSecret([u8; COMBINED_SHARED_SECRET_LEN]);
 
 impl CombinedSecret {
-    fn combine(x25519: SharedSecret, ml_kem: [u8; libcrux_ml_kem::SHARED_SECRET_SIZE]) -> Self {
+    fn combine(x25519: SharedSecret, ml_kem: [u8; mlkem::SHARED_SECRET_SIZE]) -> Self {
         let mut out = CombinedSecret([0u8; COMBINED_SHARED_SECRET_LEN]);
         out.0[..MLKEM768_SECRET_LEN].copy_from_slice(ml_kem.as_slice());
         out.0[MLKEM768_SECRET_LEN..].copy_from_slice(x25519.secret_bytes());
@@ -156,7 +157,7 @@ impl CombinedSecret {
 struct CombinedShare(Vec<u8>);
 
 impl CombinedShare {
-    fn combine(x25519: &[u8], ml_kem: mlkem768::MlKem768Ciphertext) -> Self {
+    fn combine(x25519: &[u8], ml_kem: mlkem::mlkem768::MlKem768Ciphertext) -> Self {
         let mut out = CombinedShare(vec![0u8; COMBINED_CIPHERTEXT_LEN]);
         out.0[..MLKEM768_CIPHERTEXT_LEN].copy_from_slice(ml_kem.as_ref());
         out.0[MLKEM768_CIPHERTEXT_LEN..].copy_from_slice(x25519);
@@ -164,7 +165,7 @@ impl CombinedShare {
     }
 }
 
-const NAMED_GROUP: NamedGroup = NamedGroup::Unknown(0x11ec);
+const NAMED_GROUP: NamedGroup = NamedGroup::X25519MLKEM768;
 
 const INVALID_KEY_SHARE: Error = Error::PeerMisbehaved(PeerMisbehaved::InvalidKeyShare);
 
