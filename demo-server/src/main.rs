@@ -33,7 +33,7 @@ async fn index(hbs: web::Data<handlebars::Handlebars<'_>>, req: HttpRequest) -> 
     let named = req.conn_data::<NamedGroup>().unwrap();
     let group_name = named_group_string(named);
 
-    let is_pq = *named == NamedGroup::Unknown(0x11ec);
+    let is_pq = *named == NamedGroup::X25519MLKEM768;
 
     #[derive(serde::Serialize)]
     struct Data {
@@ -169,7 +169,7 @@ impl std::error::Error for Error {
 
 fn named_group_string(group: &NamedGroup) -> String {
     match group {
-        NamedGroup::Unknown(0x11ec) => "Hybrid_ML-KEM_X25519".to_string(),
+        NamedGroup::X25519MLKEM768 => "Hybrid_ML-KEM_X25519".to_string(),
         other => format!("{other:?}"),
     }
 }

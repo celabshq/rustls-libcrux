@@ -1,8 +1,7 @@
 use alloc::boxed::Box;
 use std::sync::Mutex;
 
-use libcrux_sha2 as sha2;
-use libcrux_traits::Digest;
+use libcrux::algorithms::sha2::{self, Digest};
 use rustls::crypto::hash;
 
 pub struct Sha256;

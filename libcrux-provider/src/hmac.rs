@@ -1,6 +1,8 @@
 use alloc::boxed::Box;
 
 use rustls::crypto;
+use libcrux::algorithms::sha2 as sha2;
+use libcrux::algorithms::hmac as hmac;
 
 pub struct Sha256Hmac;
 
@@ -10,7 +12,7 @@ impl crypto::hmac::Hmac for Sha256Hmac {
     }
 
     fn hash_output_len(&self) -> usize {
-        libcrux_sha2::SHA256_LENGTH
+        sha2::SHA256_LENGTH
     }
 }
 
@@ -26,11 +28,11 @@ impl crypto::hmac::Key for Sha256HmacKey {
         }
         data.extend_from_slice(last);
 
-        let result = libcrux_hmac::hmac(libcrux_hmac::Algorithm::Sha256, &self.0, &data, None);
+        let result = hmac::hmac(hmac::Algorithm::Sha256, &self.0, &data, None);
         crypto::hmac::Tag::new(&result[..])
     }
 
     fn tag_len(&self) -> usize {
-        libcrux_hmac::tag_size(libcrux_hmac::Algorithm::Sha256)
+        hmac::tag_size(hmac::Algorithm::Sha256)
     }
 }

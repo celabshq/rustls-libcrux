@@ -8,17 +8,12 @@ description = "A rustls crypto provider based on libcrux."
 [dependencies]
 rustls = { version = "0.23.36" }
 
-libcrux = { git = "https://github.com/cryspen/libcrux", rev = "367ce83" }
-libcrux-sha2 = "0.0.5"
-libcrux-hmac = "0.0.5"
-libcrux-ed25519 = "0.0.5"
-libcrux-traits = "0.0.5"
-libcrux-ml-kem = "0.0.6"
+libcrux = "0.0.3"
+libcrux-traits = "0.0.6"
+
+hpke-rs = { version = "0.5", features = ["hazmat"]}
 
 der = "0.7"
-hpke-rs = "0.5"
-hpke-rs-crypto = "0.4"
-hpke-rs-rust-crypto = "0.4"
 pkcs8 = "0.10.2"
 pkcs1 = "0.7.5"
 pki-types = { package = "rustls-pki-types", version = "1" }
@@ -35,4 +30,4 @@ webpki-roots = "0.26"
 
 [features]
 default = ["std"]
-std = ["hpke-rs/std", "hpke-rs-crypto/std", "pkcs8/std", "rustls/std"]
+std = ["pkcs8/std", "rustls/std"]
