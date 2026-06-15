@@ -45,8 +45,8 @@ impl SupportedKxGroup for X25519MlKem768 {
         let mut rand = [0u8; mlkem::ENCAPS_SEED_SIZE];
         rand_core::OsRng.try_fill_bytes(&mut rand).unwrap();
 
-        let pk =
-            mlkem::mlkem768::MlKem768PublicKey::try_from(share.ml_kem).map_err(|_| INVALID_KEY_SHARE)?;
+        let pk = mlkem::mlkem768::MlKem768PublicKey::try_from(share.ml_kem)
+            .map_err(|_| INVALID_KEY_SHARE)?;
         let (ml_kem_share, ml_kem_secret) = mlkem::mlkem768::encapsulate(&pk, rand);
 
         let combined_secret = CombinedSecret::combine(x25519.secret, ml_kem_secret);
@@ -85,8 +85,7 @@ impl ActiveKeyExchange for Active {
         };
 
         let combined = CombinedSecret::combine(
-            self.x25519
-                .complete(ciphertext.x25519)?,
+            self.x25519.complete(ciphertext.x25519)?,
             mlkem::mlkem768::decapsulate(
                 self.key_pair.private_key(),
                 &ciphertext

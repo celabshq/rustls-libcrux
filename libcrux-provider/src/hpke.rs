@@ -27,7 +27,7 @@ pub static ALL_SUPPORTED_SUITES: &[&dyn Hpke] = &[
     DHKEM_X25519_HKDF_SHA256_CHACHA20_POLY1305,
 ];
 
-pub static DHKEM_P256_HKDF_SHA256_AES_128: &LibcruxHpkeConfig = &LibcruxHpkeConfig{
+pub static DHKEM_P256_HKDF_SHA256_AES_128: &LibcruxHpkeConfig = &LibcruxHpkeConfig {
     mode: hpke::Mode::Base,
     kem: hpke::hpke_types::KemAlgorithm::DhKemP256,
     kdf: hpke::hpke_types::KdfAlgorithm::HkdfSha256,
@@ -72,7 +72,8 @@ struct LibcruxHpkeSealer {
 
 impl HpkeSealer for LibcruxHpkeSealer {
     fn seal(&mut self, aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Error> {
-        self.context.seal(aad, plaintext)
+        self.context
+            .seal(aad, plaintext)
             .map_err(|_| Error::General(String::from("hpke seal error")))
     }
 }
@@ -84,7 +85,8 @@ struct LibcruxHpkeOpener {
 
 impl HpkeOpener for LibcruxHpkeOpener {
     fn open(&mut self, aad: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, Error> {
-        self.context.open(aad, ciphertext)
+        self.context
+            .open(aad, ciphertext)
             .map_err(|_| Error::General(String::from("hpke open error")))
     }
 }
@@ -111,12 +113,12 @@ impl Hpke for LibcruxHpkeConfig {
         plaintext: &[u8],
         pub_key: &HpkePublicKey,
     ) -> Result<(EncapsulatedSecret, Vec<u8>), Error> {
-
         let mut config = hpke::Hpke::<HPKEProvider::HpkeLibcrux>::from(self);
 
         let pk_r = hpke::HpkePublicKey::from(pub_key.0.as_slice());
 
-        config.seal(&pk_r, info, aad, plaintext, None, None, None)
+        config
+            .seal(&pk_r, info, aad, plaintext, None, None, None)
             .map_err(|_| Error::General(alloc::string::String::from("hpke seal error")))
             .map(|ctxt| (EncapsulatedSecret(ctxt.0), ctxt.1))
     }
@@ -130,14 +132,13 @@ impl Hpke for LibcruxHpkeConfig {
 
         let pk_r = hpke::HpkePublicKey::from(pub_key.0.as_slice());
 
-        let (kem_ctxt, ctx) = config.setup_sender(&pk_r, info, None, None, None)
+        let (kem_ctxt, ctx) = config
+            .setup_sender(&pk_r, info, None, None, None)
             .map_err(|_| Error::General(alloc::string::String::from("hpke setup sealer error")))?;
 
         Ok((
             EncapsulatedSecret(kem_ctxt),
-            Box::new(LibcruxHpkeSealer {
-                context: ctx,
-            }),
+            Box::new(LibcruxHpkeSealer { context: ctx }),
         ))
     }
 
@@ -153,7 +154,8 @@ impl Hpke for LibcruxHpkeConfig {
 
         let sk_r = hpke::HpkePrivateKey::from(secret_key.secret_bytes());
 
-        config.open(&enc.0, &sk_r, info, aad, ciphertext, None, None, None)
+        config
+            .open(&enc.0, &sk_r, info, aad, ciphertext, None, None, None)
             .map_err(|_| Error::General(alloc::string::String::from("hpke open error")))
     }
 
@@ -167,22 +169,26 @@ impl Hpke for LibcruxHpkeConfig {
 
         let sk_r = hpke::HpkePrivateKey::from(secret_key.secret_bytes());
 
-        
-        let ctx = config.setup_receiver(&enc.0, &sk_r, info, None, None, None)
+        let ctx = config
+            .setup_receiver(&enc.0, &sk_r, info, None, None, None)
             .map_err(|_| Error::General(alloc::string::String::from("hpke setup opener error")))?;
 
-        Ok(Box::new(LibcruxHpkeOpener {
-            context: ctx,
-        }))
+        Ok(Box::new(LibcruxHpkeOpener { context: ctx }))
     }
 
     fn generate_key_pair(&self) -> Result<(HpkePublicKey, HpkePrivateKey), Error> {
         let mut config = hpke::Hpke::<HPKEProvider::HpkeLibcrux>::from(self);
 
-        config.generate_key_pair()
+        config
+            .generate_key_pair()
             .map_err(|_| Error::General(String::from("hpke kem keygen error")))
             .map(|pair| pair.into_keys())
-            .map(|(sk, pk)| (HpkePublicKey(pk.as_slice().to_vec()), HpkePrivateKey::from(sk.as_slice().to_vec())))
+            .map(|(sk, pk)| {
+                (
+                    HpkePublicKey(pk.as_slice().to_vec()),
+                    HpkePrivateKey::from(sk.as_slice().to_vec()),
+                )
+            })
     }
 
     fn suite(&self) -> HpkeSuite {
@@ -250,9 +256,7 @@ mod tests {
             let ct = sealer.seal(aad, pt).unwrap();
 
             // We should be able to set up an opener.
-            let mut opener = suite
-                .setup_opener(&enc, info, &sk)
-                .unwrap();
+            let mut opener = suite.setup_opener(&enc, info, &sk).unwrap();
             _ = format!("{opener:?}"); // Opener should be Debug.
 
             // Setting up an opener with an invalid private key should fail.
@@ -281,8 +285,6 @@ mod tests {
     #[test]
     fn test_fips() {
         // None of the rust-crypto backed hpke-rs suites should be considered FIPS approved.
-        assert!(ALL_SUPPORTED_SUITES
-            .iter()
-            .all(|suite| !suite.fips()));
+        assert!(ALL_SUPPORTED_SUITES.iter().all(|suite| !suite.fips()));
     }
 }

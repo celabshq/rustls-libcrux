@@ -12,10 +12,8 @@ use rustls::{
     ConnectionTrafficSecrets, ContentType, ProtocolVersion,
 };
 
-use libcrux::{algorithms::aes_gcm::Aead, primitives::aead};
 use libcrux::algorithms::chacha20poly1305;
-
-
+use libcrux::{algorithms::aes_gcm::Aead, primitives::aead};
 
 pub enum LibcruxAeadKey {
     Chacha20Poly1305([u8; chacha20poly1305::KEY_LEN]),
@@ -105,7 +103,10 @@ impl MessageEncrypter for Tls13Cipher {
         let mut ciphertext = vec![0u8; plaintext.len()];
 
         let key = match &self.0 {
-            LibcruxAeadKey::Chacha20Poly1305(key) => aead::KeyRef::new_for_algo(aead::Aead::ChaCha20Poly1305, key).map_err(|_| rustls::Error::EncryptError)?,
+            LibcruxAeadKey::Chacha20Poly1305(key) => {
+                aead::KeyRef::new_for_algo(aead::Aead::ChaCha20Poly1305, key)
+                    .map_err(|_| rustls::Error::EncryptError)?
+            }
         };
 
         let mut tag = vec![0u8; key.algo().tag_len()];
@@ -145,7 +146,10 @@ impl MessageDecrypter for Tls13Cipher {
         seq: u64,
     ) -> Result<InboundPlainMessage<'a>, rustls::Error> {
         let key = match &self.0 {
-            LibcruxAeadKey::Chacha20Poly1305(key) => aead::KeyRef::new_for_algo(aead::Aead::ChaCha20Poly1305, key).map_err(|_| rustls::Error::DecryptError)?,
+            LibcruxAeadKey::Chacha20Poly1305(key) => {
+                aead::KeyRef::new_for_algo(aead::Aead::ChaCha20Poly1305, key)
+                    .map_err(|_| rustls::Error::DecryptError)?
+            }
         };
 
         let payload_and_tag = &mut m.payload;
@@ -170,8 +174,7 @@ impl MessageDecrypter for Tls13Cipher {
         key.decrypt(&mut plaintext, nonce, &aad, payload, tag)
             .map_err(|_| rustls::Error::DecryptError)?;
 
-        m.payload
-            .truncate(m.payload.len() - tag_len);
+        m.payload.truncate(m.payload.len() - tag_len);
 
         m.payload.copy_from_slice(&plaintext);
 
@@ -196,9 +199,12 @@ impl MessageEncrypter for Tls12Cipher {
         let nonce = Nonce::new(&self.1, seq);
         let aad = make_tls12_aad(seq, m.typ, m.version, m.payload.len());
         let mut ciphertext = vec![0u8; plaintext.len()];
-        
+
         let key = match &self.0 {
-            LibcruxAeadKey::Chacha20Poly1305(key) => aead::KeyRef::new_for_algo(aead::Aead::ChaCha20Poly1305, key).map_err(|_| rustls::Error::EncryptError)?,
+            LibcruxAeadKey::Chacha20Poly1305(key) => {
+                aead::KeyRef::new_for_algo(aead::Aead::ChaCha20Poly1305, key)
+                    .map_err(|_| rustls::Error::EncryptError)?
+            }
         };
 
         let mut tag = vec![0u8; key.algo().tag_len()];
@@ -215,11 +221,7 @@ impl MessageEncrypter for Tls12Cipher {
         let mut payload = PrefixedPayload::with_capacity(total_len);
         payload.extend_from_slice(&ciphertext);
 
-        Ok(OutboundOpaqueMessage::new(
-            m.typ,
-            m.version,
-            payload,
-        ))
+        Ok(OutboundOpaqueMessage::new(m.typ, m.version, payload))
     }
 
     fn encrypted_payload_len(&self, payload_len: usize) -> usize {
@@ -234,7 +236,10 @@ impl MessageDecrypter for Tls12Cipher {
         seq: u64,
     ) -> Result<InboundPlainMessage<'a>, rustls::Error> {
         let key = match &self.0 {
-            LibcruxAeadKey::Chacha20Poly1305(key) => aead::KeyRef::new_for_algo(aead::Aead::ChaCha20Poly1305, key).map_err(|_| rustls::Error::DecryptError)?,
+            LibcruxAeadKey::Chacha20Poly1305(key) => {
+                aead::KeyRef::new_for_algo(aead::Aead::ChaCha20Poly1305, key)
+                    .map_err(|_| rustls::Error::DecryptError)?
+            }
         };
 
         let payload_and_tag = &mut m.payload;
@@ -263,8 +268,7 @@ impl MessageDecrypter for Tls12Cipher {
         key.decrypt(&mut plaintext, nonce, &aad, payload, tag)
             .map_err(|_| rustls::Error::DecryptError)?;
 
-        m.payload
-            .truncate(m.payload.len() - tag_len);
+        m.payload.truncate(m.payload.len() - tag_len);
 
         m.payload.copy_from_slice(&plaintext);
 

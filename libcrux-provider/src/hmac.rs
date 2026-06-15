@@ -1,8 +1,7 @@
 use alloc::boxed::Box;
 
+use libcrux::algorithms::{hmac, sha2};
 use rustls::crypto;
-use libcrux::algorithms::sha2 as sha2;
-use libcrux::algorithms::hmac as hmac;
 
 pub struct Sha256Hmac;
 

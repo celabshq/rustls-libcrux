@@ -4,8 +4,8 @@ use alloc::string::String;
 use libcrux::algorithms::curve25519;
 
 use libcrux_traits::ecdh::owned::EcdhOwned;
-use rustls::crypto::{self, SupportedKxGroup as _};
 use rand_core::TryRngCore;
+use rustls::crypto::{self, SupportedKxGroup as _};
 
 use crate::pq::X25519MlKem768;
 
@@ -19,7 +19,9 @@ impl crypto::ActiveKeyExchange for X25519KeyExchange {
         self: Box<X25519KeyExchange>,
         peer: &[u8],
     ) -> Result<crypto::SharedSecret, rustls::Error> {
-        let peer: [u8; 32] = peer.try_into().map_err(|_| rustls::Error::General(String::from("ecdh derive error")))?;
+        let peer: [u8; 32] = peer
+            .try_into()
+            .map_err(|_| rustls::Error::General(String::from("ecdh derive error")))?;
         let shared_secret = curve25519::X25519::derive_ecdh(&peer, &self.priv_key)
             .map_err(|_| rustls::Error::General(String::from("ecdh derive error")))?;
 
@@ -46,8 +48,11 @@ pub struct X25519;
 impl crypto::SupportedKxGroup for X25519 {
     fn start(&self) -> Result<Box<dyn crypto::ActiveKeyExchange>, rustls::Error> {
         let mut rand: [u8; 32] = [0u8; 32];
-        rand_core::OsRng.try_fill_bytes(&mut rand).map_err(|_| rustls::Error::FailedToGetRandomBytes)?;
-        let (pub_key, priv_key) = curve25519::X25519::generate_pair(&rand).map_err(|_| rustls::Error::General(String::from("ecdh keygen error")))?;
+        rand_core::OsRng
+            .try_fill_bytes(&mut rand)
+            .map_err(|_| rustls::Error::FailedToGetRandomBytes)?;
+        let (pub_key, priv_key) = curve25519::X25519::generate_pair(&rand)
+            .map_err(|_| rustls::Error::General(String::from("ecdh keygen error")))?;
 
         Ok(Box::new(X25519KeyExchange { pub_key, priv_key }))
     }

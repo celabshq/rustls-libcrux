@@ -8,16 +8,14 @@ use der::oid::Arc as OidArc;
 use der::{Decode, Tag, Tagged};
 use pkcs8::ObjectIdentifier;
 use rand_core::TryRngCore;
-use sec1::EcPrivateKey;
 use rustls::pki_types::PrivateKeyDer;
 use rustls::sign::{Signer, SigningKey};
 use rustls::{SignatureAlgorithm, SignatureScheme};
+use sec1::EcPrivateKey;
 
 use der::{asn1::UintRef, Encode};
 
-use libcrux::algorithms::rsapss;
-use libcrux::algorithms::ecdsa;
-use libcrux::algorithms::ed25519;
+use libcrux::algorithms::{ecdsa, ed25519, rsapss};
 
 #[derive(Clone, Debug, Copy)]
 pub enum EcdsaSignatureScheme {
@@ -131,24 +129,21 @@ fn trim_leading_zeroes(mut buf: &[u8]) -> &[u8] {
 impl core::fmt::Debug for LibcruxSigningKey {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            LibcruxSigningKey::RsaPss { n, d: _, hash_algo } => {
-                f.debug_struct("RsaPss")
-                    .field("modulus_len", &n.len())
-                    .field("private_exponent", &"<redacted>")
-                    .field("hash_algo", hash_algo)
-                    .finish()
-            }
-            LibcruxSigningKey::Ecdsa(_, scheme) => {
-                f.debug_struct("Ecdsa")
-                    .field("private_key", &"<redacted>")
-                    .field("scheme", scheme)
-                    .finish()
-            }
-            LibcruxSigningKey::Ed25519(_) => {
-                f.debug_struct("Ed25519")
-                    .field("private_key", &"<redacted>")
-                    .finish()
-            }
+            LibcruxSigningKey::RsaPss { n, d: _, hash_algo } => f
+                .debug_struct("RsaPss")
+                .field("modulus_len", &n.len())
+                .field("private_exponent", &"<redacted>")
+                .field("hash_algo", hash_algo)
+                .finish(),
+            LibcruxSigningKey::Ecdsa(_, scheme) => f
+                .debug_struct("Ecdsa")
+                .field("private_key", &"<redacted>")
+                .field("scheme", scheme)
+                .finish(),
+            LibcruxSigningKey::Ed25519(_) => f
+                .debug_struct("Ed25519")
+                .field("private_key", &"<redacted>")
+                .finish(),
         }
     }
 }
@@ -162,7 +157,11 @@ impl Clone for LibcruxSigningKey {
                 LibcruxSigningKey::Ecdsa(key, *scheme)
             }
             LibcruxSigningKey::Ed25519(key) => LibcruxSigningKey::Ed25519(*key),
-            LibcruxSigningKey::RsaPss { n, d, hash_algo } => LibcruxSigningKey::RsaPss { n: n.clone(), d: d.clone(), hash_algo: *hash_algo },
+            LibcruxSigningKey::RsaPss { n, d, hash_algo } => LibcruxSigningKey::RsaPss {
+                n: n.clone(),
+                d: d.clone(),
+                hash_algo: *hash_algo,
+            },
         }
     }
 }
@@ -187,21 +186,16 @@ impl SigningKey for LibcruxSigningKey {
 impl Signer for LibcruxSigningKey {
     fn sign(&self, message: &[u8]) -> Result<Vec<u8>, rustls::Error> {
         match self {
-            LibcruxSigningKey::RsaPss {
-                n,
-                d,
-                hash_algo,
-            } => {
+            LibcruxSigningKey::RsaPss { n, d, hash_algo } => {
                 let mut sig = vec![0u8; n.len()];
                 let mut salt = [0u8; 32];
                 rand_core::OsRng.try_fill_bytes(&mut salt).unwrap();
                 let n = n.as_slice();
                 let d = d.as_slice();
 
-                let priv_key =
-                    rsapss::VarLenPrivateKey::from_components(n, d).map_err(|_| {
-                        rustls::Error::General(String::from("error building private key"))
-                    })?;
+                let priv_key = rsapss::VarLenPrivateKey::from_components(n, d).map_err(|_| {
+                    rustls::Error::General(String::from("error building private key"))
+                })?;
                 rsapss::sign_varlen(*hash_algo, &priv_key, message, &salt, sig.as_mut_slice())
                     .map_err(|_| rustls::Error::General(String::from("error signing")))?;
 
@@ -221,9 +215,8 @@ impl Signer for LibcruxSigningKey {
                                 "error der encoding ecdsa signature",
                             ))
                         })
-                    }
-                    // EcdsaSignatureScheme::ECDSA_NISTP384_SHA384 => todo!(),
-                    // EcdsaSignatureScheme::ECDSA_NISTP521_SHA512 => todo!(),
+                    } // EcdsaSignatureScheme::ECDSA_NISTP384_SHA384 => todo!(),
+                      // EcdsaSignatureScheme::ECDSA_NISTP521_SHA512 => todo!(),
                 }
             }
 

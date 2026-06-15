@@ -1,12 +1,12 @@
 use der::Reader;
 use rustls::crypto::WebPkiSupportedAlgorithms;
-use rustls::pki_types::{alg_id, AlgorithmIdentifier, InvalidSignature, SignatureVerificationAlgorithm};
+use rustls::pki_types::{
+    alg_id, AlgorithmIdentifier, InvalidSignature, SignatureVerificationAlgorithm,
+};
 use rustls::SignatureScheme;
-use webpki::{aws_lc_rs::RSA_PKCS1_2048_8192_SHA256 as AWS_LC_RSA_PKCS1_SHA256};
+use webpki::aws_lc_rs::RSA_PKCS1_2048_8192_SHA256 as AWS_LC_RSA_PKCS1_SHA256;
 
-use libcrux::algorithms::ecdsa;
-use libcrux::algorithms::ed25519;
-use libcrux::algorithms::rsapss;
+use libcrux::algorithms::{ecdsa, ed25519, rsapss};
 
 pub static ALGORITHMS: WebPkiSupportedAlgorithms = WebPkiSupportedAlgorithms {
     all: &[
@@ -55,25 +55,12 @@ impl SignatureVerificationAlgorithm for EcdsaP256Verify {
         signature: &[u8],
     ) -> Result<(), InvalidSignature> {
         let mut decoder = der::SliceReader::new(signature).map_err(|_| InvalidSignature)?;
-        let sig: DerEcdsaSignature = decoder
-            .decode()
-            .map_err(|_| InvalidSignature)?;
-        let r: [u8; 32] = sig
-            .r
-            .as_bytes()
-            .try_into()
-            .map_err(|_| InvalidSignature)?;
-        let s: [u8; 32] = sig
-            .s
-            .as_bytes()
-            .try_into()
-            .map_err(|_| InvalidSignature)?;
-        let signature = ecdsa::p256::Signature::from_raw(
-            r,
-            s,
-        );
-        let public_key = ecdsa::p256::PublicKey::try_from(public_key)
-            .map_err(|_| InvalidSignature)?;
+        let sig: DerEcdsaSignature = decoder.decode().map_err(|_| InvalidSignature)?;
+        let r: [u8; 32] = sig.r.as_bytes().try_into().map_err(|_| InvalidSignature)?;
+        let s: [u8; 32] = sig.s.as_bytes().try_into().map_err(|_| InvalidSignature)?;
+        let signature = ecdsa::p256::Signature::from_raw(r, s);
+        let public_key =
+            ecdsa::p256::PublicKey::try_from(public_key).map_err(|_| InvalidSignature)?;
         let alg = ecdsa::DigestAlgorithm::Sha256;
         ecdsa::p256::verify(alg, message, &signature, &public_key).map_err(|_| InvalidSignature)
     }
@@ -151,9 +138,7 @@ fn decode_spki_spk(spki_spk: &[u8]) -> Result<rsapss::VarLenPublicKey<'_>, Inval
     // public_key: unfortunately this is not a whole SPKI, but just the key material.
     // decode the two integers manually.
     let mut reader = der::SliceReader::new(spki_spk).map_err(|_| InvalidSignature)?;
-    let ne: [der::asn1::UintRef; 2] = reader
-        .decode()
-        .map_err(|_| InvalidSignature)?;
+    let ne: [der::asn1::UintRef; 2] = reader.decode().map_err(|_| InvalidSignature)?;
 
     let n = ne[0].as_bytes();
     let e = ne[1].as_bytes();
