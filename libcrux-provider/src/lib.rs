@@ -6,6 +6,7 @@ extern crate std;
 
 use alloc::sync::Arc;
 
+use rand::TryRng as _;
 use rustls::crypto::CryptoProvider;
 use rustls::pki_types::PrivateKeyDer;
 
@@ -35,8 +36,7 @@ struct Provider;
 
 impl rustls::crypto::SecureRandom for Provider {
     fn fill(&self, bytes: &mut [u8]) -> Result<(), rustls::crypto::GetRandomFailed> {
-        use rand_core::TryRngCore;
-        rand_core::OsRng
+        rand::rngs::SysRng
             .try_fill_bytes(bytes)
             .map_err(|_| rustls::crypto::GetRandomFailed)
     }

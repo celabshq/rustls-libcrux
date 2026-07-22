@@ -1,5 +1,5 @@
 [workspace]
-members = ["libcrux-provider", "demo-server"]
+members = ["demo-server", "libcrux-provider"]
 
 resolver = "2"
 

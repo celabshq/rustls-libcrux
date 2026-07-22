@@ -4,7 +4,7 @@ use alloc::string::String;
 use libcrux::algorithms::curve25519;
 
 use libcrux_traits::ecdh::owned::EcdhOwned;
-use rand_core::TryRngCore;
+use rand::TryRng as _;
 use rustls::crypto::{self, SupportedKxGroup as _};
 
 use crate::pq::X25519MlKem768;
@@ -48,7 +48,7 @@ pub struct X25519;
 impl crypto::SupportedKxGroup for X25519 {
     fn start(&self) -> Result<Box<dyn crypto::ActiveKeyExchange>, rustls::Error> {
         let mut rand: [u8; 32] = [0u8; 32];
-        rand_core::OsRng
+        rand::rngs::SysRng
             .try_fill_bytes(&mut rand)
             .map_err(|_| rustls::Error::FailedToGetRandomBytes)?;
         let (pub_key, priv_key) = curve25519::X25519::generate_pair(&rand)
