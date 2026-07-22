@@ -1,19 +1,18 @@
-use std::vec;
-
 use alloc::boxed::Box;
 use alloc::string::String;
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 
 use der::oid::Arc as OidArc;
-use der::{Decode, Tag, Tagged};
-use pkcs8::ObjectIdentifier;
-use rand_core::TryRngCore;
+use der::{Encode, Tag, Tagged};
+use pkcs8::{DecodePrivateKey, KeyError, ObjectIdentifier};
+use rand::rand_core::UnwrapErr;
+use rand::TryRng as _;
 use rustls::pki_types::PrivateKeyDer;
 use rustls::sign::{Signer, SigningKey};
 use rustls::{SignatureAlgorithm, SignatureScheme};
 use sec1::EcPrivateKey;
 
-use der::{asn1::UintRef, Encode};
+use der::asn1::UintRef;
 
 use libcrux::algorithms::{ecdsa, ed25519, rsapss};
 
@@ -46,7 +45,9 @@ impl TryFrom<PrivateKeyDer<'_>> for LibcruxSigningKey {
     fn try_from(value: PrivateKeyDer<'_>) -> Result<Self, Self::Error> {
         match value {
             PrivateKeyDer::Pkcs8(der) => {
-                let private_key_info = pkcs8::PrivateKeyInfo::try_from(der.secret_pkcs8_der())?;
+                let private_key_info =
+                    pkcs8::PrivateKeyInfoOwned::from_pkcs8_der(der.secret_pkcs8_der())
+                        .map_err(|_| pkcs8::Error::KeyMalformed(KeyError::Invalid))?;
                 let algo_oid_arcs: Vec<OidArc> = private_key_info.algorithm.oid.arcs().collect();
 
                 match algo_oid_arcs.as_slice() {
@@ -55,9 +56,9 @@ impl TryFrom<PrivateKeyDer<'_>> for LibcruxSigningKey {
                         let parameter = private_key_info
                             .algorithm
                             .parameters
-                            .ok_or(pkcs8::Error::KeyMalformed)?;
+                            .ok_or(pkcs8::Error::KeyMalformed(KeyError::Invalid))?;
                         if parameter.tag() != Tag::ObjectIdentifier {
-                            return Err(pkcs8::Error::KeyMalformed);
+                            return Err(pkcs8::Error::KeyMalformed(KeyError::Invalid));
                         }
 
                         let parameter_oid =
@@ -66,40 +67,43 @@ impl TryFrom<PrivateKeyDer<'_>> for LibcruxSigningKey {
 
                         let (key, scheme) = match parameter_oid_arcs.as_slice() {
                             [1, 2, 840, 10045, 3, 1, 7] => {
-                                let key = private_key_info.private_key;
-                                let key: ecdsa::p256::PrivateKey = EcPrivateKey::try_from(key)
-                                    .map_err(|_| pkcs8::Error::KeyMalformed)?
-                                    .private_key
-                                    .try_into()
-                                    .map_err(|_| pkcs8::Error::KeyMalformed)?;
+                                let key_bytes = private_key_info.private_key.as_bytes();
+                                let key: ecdsa::p256::PrivateKey =
+                                    EcPrivateKey::try_from(key_bytes)
+                                        .map_err(|_| pkcs8::Error::KeyMalformed(KeyError::Invalid))?
+                                        .private_key
+                                        .try_into()
+                                        .map_err(|_| {
+                                            pkcs8::Error::KeyMalformed(KeyError::Invalid)
+                                        })?;
 
                                 (key, EcdsaSignatureScheme::ECDSA_NISTP256_SHA256)
                             }
                             // [1, 3, 132, 0, 34] => EcdsaSignatureScheme::ECDSA_NISTP384_SHA384,
                             // [1, 3, 132, 0, 35] => EcdsaSignatureScheme::ECDSA_NISTP521_SHA512,
-                            _ => return Err(pkcs8::Error::KeyMalformed),
+                            _ => return Err(pkcs8::Error::KeyMalformed(KeyError::Invalid)),
                         };
 
                         Ok(Self::Ecdsa(key, scheme))
                     }
                     // `rsaEncryption` from RFC3279 / PKCS#1
                     [1, 2, 840, 113549, 1, 1, 1] => {
-                        let mut decoder = der::SliceReader::new(private_key_info.private_key)?;
-                        let rsa_priv_key = pkcs1::RsaPrivateKey::decode(&mut decoder)?;
+                        // `pkcs1` uses der 0.7, so decode from the raw key bytes with its
+                        // own reader rather than passing our der 0.8 decoder.
+                        let key_bytes = private_key_info.private_key.as_bytes();
+                        let rsa_priv_key = pkcs1::RsaPrivateKey::try_from(key_bytes)
+                            .map_err(|_| pkcs8::Error::KeyMalformed(KeyError::Invalid))?;
 
                         if !matches!(rsa_priv_key.public_exponent.as_bytes(), [1, 0, 1]) {
                             return Err(pkcs8::Error::ParametersMalformed);
                         }
 
-                        let n = rsa_priv_key.modulus.as_bytes();
-                        let n = trim_leading_zeroes(n).to_vec();
-
-                        let d = rsa_priv_key.private_exponent.as_bytes();
-                        let d = trim_leading_zeroes(d).to_vec();
-
-                        // let pub_key =
-                        //     signature::rsa_pss::RsaPssPublicKey::new(key_size, &n).unwrap();
-                        // let priv_key = signature::rsa_pss::RsaPssPrivateKey::new(&pub_key, &d);
+                        // `n` (the modulus) fixes the key length; left-pad `d` (always < n)
+                        // to match, since libcrux's `from_components` requires equal lengths.
+                        let n = rsa_priv_key.modulus.as_bytes().to_vec();
+                        let d_bytes = rsa_priv_key.private_exponent.as_bytes();
+                        let mut d = vec![0u8; n.len()];
+                        d[n.len() - d_bytes.len()..].copy_from_slice(d_bytes);
 
                         Ok(Self::RsaPss {
                             n,
@@ -107,23 +111,12 @@ impl TryFrom<PrivateKeyDer<'_>> for LibcruxSigningKey {
                             hash_algo: rsapss::DigestAlgorithm::Sha2_256,
                         })
                     }
-                    _ => Err(pkcs8::Error::KeyMalformed),
+                    _ => Err(pkcs8::Error::KeyMalformed(KeyError::Invalid)),
                 }
             }
-            _ => Err(pkcs8::Error::KeyMalformed),
+            _ => Err(pkcs8::Error::KeyMalformed(KeyError::Invalid)),
         }
     }
-}
-
-fn trim_leading_zeroes(mut buf: &[u8]) -> &[u8] {
-    while let Some(leading) = buf.first() {
-        if *leading == 0 {
-            buf = &buf[481..];
-        } else {
-            break;
-        }
-    }
-    buf
 }
 
 impl core::fmt::Debug for LibcruxSigningKey {
@@ -189,7 +182,9 @@ impl Signer for LibcruxSigningKey {
             LibcruxSigningKey::RsaPss { n, d, hash_algo } => {
                 let mut sig = vec![0u8; n.len()];
                 let mut salt = [0u8; 32];
-                rand_core::OsRng.try_fill_bytes(&mut salt).unwrap();
+                rand::rngs::SysRng.try_fill_bytes(&mut salt).map_err(|_| {
+                    rustls::Error::General(String::from("error generating random salt"))
+                })?;
                 let n = n.as_slice();
                 let d = d.as_slice();
 
@@ -205,8 +200,9 @@ impl Signer for LibcruxSigningKey {
             LibcruxSigningKey::Ecdsa(private_key, scheme) => {
                 match scheme {
                     EcdsaSignatureScheme::ECDSA_NISTP256_SHA256 => {
+                        let mut rng = UnwrapErr(rand::rngs::SysRng);
                         let alg = ecdsa::DigestAlgorithm::Sha256;
-                        let nonce = ecdsa::p256::Nonce::random(&mut rand_core::OsRng.unwrap_mut())
+                        let nonce = ecdsa::p256::Nonce::random(&mut rng)
                             .map_err(|_| rustls::Error::General(String::from("signing error")))?;
                         let sig = ecdsa::p256::sign(alg, message, private_key, &nonce)
                             .map_err(|_| rustls::Error::General(String::from("signing error")))?;

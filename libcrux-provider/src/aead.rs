@@ -13,7 +13,7 @@ use rustls::{
 };
 
 use libcrux::algorithms::chacha20poly1305;
-use libcrux::{algorithms::aes_gcm::Aead, primitives::aead};
+use libcrux::{algorithms::aes_aead::Aead, primitives::aead};
 
 pub enum LibcruxAeadKey {
     Chacha20Poly1305([u8; chacha20poly1305::KEY_LEN]),
@@ -220,6 +220,7 @@ impl MessageEncrypter for Tls12Cipher {
 
         let mut payload = PrefixedPayload::with_capacity(total_len);
         payload.extend_from_slice(&ciphertext);
+        payload.extend_from_slice(tag.as_ref());
 
         Ok(OutboundOpaqueMessage::new(m.typ, m.version, payload))
     }
@@ -251,12 +252,9 @@ impl MessageDecrypter for Tls12Cipher {
 
         let (payload, tag) = payload_and_tag.split_at_mut(payload_and_tag_len - tag_len);
         let nonce = Nonce::new(&self.1, seq);
-        let aad = make_tls12_aad(
-            seq,
-            m.typ,
-            m.version,
-            payload.len() - CHACHAPOLY1305_OVERHEAD,
-        );
+        // `payload` is already the tag-stripped ciphertext, whose length equals the
+        // plaintext length — matching what the encrypter passes as the AAD length.
+        let aad = make_tls12_aad(seq, m.typ, m.version, payload.len());
         let mut plaintext = vec![0u8; payload.len()];
 
         let tag = aead::TagRef::new_for_algo(*key.algo(), tag)
