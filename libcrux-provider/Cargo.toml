@@ -6,7 +6,7 @@ name = "rustls-libcrux-provider"
 version = "0.0.1"
 
 [dependencies]
-rustls = { version = "0.23.42" }
+rustls = { version = "0.23.44" }
 
 libcrux = "0.0.5"
 libcrux-traits = "0.0.8"
